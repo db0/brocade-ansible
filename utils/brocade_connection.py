@@ -56,7 +56,10 @@ def login(fos_ip_addr, fos_user_name, fos_password, is_https, throttle, result):
                                            method="POST", validate_certs=validate_certs)
     except urllib_error.HTTPError as e:
         result["login_resp_code"] = e.code
-        result["login_resp_reason"] = e.reason
+        if hasattr(e, 'reason'):
+            result["login_resp_reason"] = e.reason
+        else:
+            result["login_resp_reason"] = e.message
         result["full_login_Url"] = full_login_url
         ret_code, root_dict = bsn_xmltodict(result, e.read())
         result["login_resp_data"] = root_dict
