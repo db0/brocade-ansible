@@ -34,10 +34,10 @@ options:
     credential:
         description:
         - login information including
-          fos_ip_addr: ip address of the FOS switch
-          fos_user_name: login name of FOS switch REST API
-          fos_password: password of FOS switch REST API
-          https: True for HTTPS, self for self-signed HTTPS, or False for HTTP
+          fos_ip_addr - ip address of the FOS switch
+          fos_user_name - login name of FOS switch REST API
+          fos_password - password of FOS switch REST API
+          https - True for HTTPS, self for self-signed HTTPS, or False for HTTP
         type: dict
         required: true
     vfid:
@@ -48,18 +48,33 @@ options:
         required: false
     throttle:
         description:
-        - rest throttling delay in seconds.
+        - rest throttling delay in seconds to retry once more if
+          server is busy.
+        required: false
+    timeout:
+        description:
+        - rest timeout in seconds for operations taking longer than
+          default timeout.
         required: false
     aliases:
         description:
         - List of aliases to be created or modified. If an alias does
           not exist in the current Zone Database, the alias will be
           created with the members specified. If an alias already
-          exist in the current Zone Database, the alias is upcated to
+          exist in the current Zone Database, the alias is updated to
           reflect to members specificed. In other word, new members
           will be added and removed members will be removed.
           If no aliases_to_delete are listed, aliases is required.
           aliases_to_delete and aliases are mutually exclusive.
+        required: false
+    members_add_only:
+        description:
+        - If set to True, new members will be added and old members
+          not specified also remain
+        required: false
+    members_remove_only:
+        description:
+        - If set to True, members specified are removed
         required: false
     aliases_to_delete:
         description:
@@ -128,51 +143,7 @@ Brocade Zoning Alias
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils.brocade_connection import login, logout, exit_after_login
-from ansible.module_utils.brocade_zoning import zoning_common, alias_post, alias_delete, alias_get,\
-    process_member_diff
-
-
-def alias_process_diff(result, aliases, c_aliases):
-    """
-    return the diff from expected aliases vs. current aliases
-
-    :param aliases: list of expected aliases
-    :type aliases: list
-    :param c_aliases: list of current aliases
-    :type c_aliases: list
-    :return: indicate if diff or the same
-    :rtype: bool
-    :return: list of aliases with to be added members
-    :rtype: list
-    :return: list of aliases with to be removed members
-    :rtype: list
-    """
-    post_aliases = []
-    remove_aliases = []
-    for alias in aliases:
-        found_in_c = False
-        for c_alias in c_aliases:
-            if alias["name"] == c_alias["alias-name"]:
-                found_in_c = True
-                added_members, removed_members = process_member_diff(
-                    result, alias["members"],
-                    c_alias["member-entry"]["alias-entry-name"])
-
-                if len(added_members) > 0:
-                    post_alias = {}
-                    post_alias["name"] = alias["name"]
-                    post_alias["members"] = added_members
-                    post_aliases.append(post_alias)
-                if len(removed_members) > 0:
-                    remove_alias = {}
-                    remove_alias["name"] = alias["name"]
-                    remove_alias["members"] = removed_members
-                    remove_aliases.append(remove_alias)
-                continue
-        if not found_in_c:
-            post_aliases.append(alias)
-
-    return 0, post_aliases, remove_aliases
+from ansible.module_utils.brocade_zoning import zoning_common, alias_post, alias_delete, alias_get, alias_process_diff, alias_process_diff_to_delete
 
 
 def main():
@@ -181,10 +152,13 @@ def main():
     """
 
     argument_spec = dict(
-        credential=dict(required=True, type='dict'),
+        credential=dict(required=True, type='dict', no_log=True),
         vfid=dict(required=False, type='int'),
         throttle=dict(required=False, type='float'),
+        timeout=dict(required=False, type='float'),
         aliases=dict(required=False, type='list'),
+        members_add_only=dict(required=False, type='bool'),
+        members_remove_only=dict(required=False, type='bool'),
         aliases_to_delete=dict(required=False, type='list'))
 
     module = AnsibleModule(
@@ -200,8 +174,11 @@ def main():
     fos_password = input_params['credential']['fos_password']
     https = input_params['credential']['https']
     throttle = input_params['throttle']
+    timeout = input_params['timeout']
     vfid = input_params['vfid']
     aliases = input_params['aliases']
+    members_add_only = input_params['members_add_only']
+    members_remove_only = input_params['members_remove_only']
     aliases_to_delete = input_params['aliases_to_delete']
     result = {"changed": False}
 
@@ -210,16 +187,17 @@ def main():
 
     ret_code, auth, fos_version = login(fos_ip_addr,
                            fos_user_name, fos_password,
-                           https, throttle, result)
+                           https, throttle, result, timeout)
     if ret_code != 0:
         module.exit_json(**result)
 
     zoning_common(fos_ip_addr, https, auth, vfid, result, module, aliases,
-                  aliases_to_delete, "alias",
-                  alias_process_diff, alias_get, alias_post, alias_delete,
-                  None)
+                  members_add_only, members_remove_only, aliases_to_delete, "alias",
+                  alias_process_diff, alias_process_diff_to_delete,
+                  alias_get, alias_post, alias_delete,
+                  None, timeout)
 
-    ret_code = logout(fos_ip_addr, https, auth, result)
+    ret_code = logout(fos_ip_addr, https, auth, result, timeout)
     module.exit_json(**result)
 
 

@@ -34,10 +34,10 @@ options:
     credential:
         description:
         - login information including
-          fos_ip_addr: ip address of the FOS switch
-          fos_user_name: login name of FOS switch REST API
-          fos_password: password of FOS switch REST API
-          https: True for HTTPS, self for self-signed HTTPS, or False for HTTP
+          fos_ip_addr - ip address of the FOS switch
+          fos_user_name - login name of FOS switch REST API
+          fos_password - password of FOS switch REST API
+          https - True for HTTPS, self for self-signed HTTPS, or False for HTTP
         type: dict
         required: true
     vfid:
@@ -48,7 +48,13 @@ options:
         required: false
     throttle:
         description:
-        - rest throttling delay in seconds.
+        - rest throttling delay in seconds to retry once more if
+          server is busy.
+        required: false
+    timeout:
+        description:
+        - rest timeout in seconds for operations taking longer than
+          default timeout.
         required: false
     cfgs:
         description:
@@ -59,6 +65,14 @@ options:
           reflect to members specificed. In other word, new members
           will be added and removed members will be removed. cfgs and
           cfgs_to_delete are mutually exclusive.
+        required: false
+    members_add_only:
+        description:
+        - If set to True, new members will be added and old members
+          not specified also remain
+    members_remove_only:
+        description:
+        - If set to True, members specified are removed
         required: false
     cfgs_to_delete:
         description:
@@ -130,49 +144,7 @@ Brocade Zoning Cfgs
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils.brocade_connection import login, logout, exit_after_login
-from ansible.module_utils.brocade_zoning import zoning_common, cfg_post, cfg_delete, cfg_get, process_member_diff
-
-
-def cfg_process_diff(result, cfgs, c_cfgs):
-    """
-    return the diff from expected cfgs vs. current cfgs
-
-    :param cfgs: list of expected cfgs
-    :type cfgs: list
-    :param c_cfgs: list of current cfgs
-    :type c_cfgs: list
-    :return: indicate if diff or the same
-    :rtype: bool
-    :return: list of cfgs with to be added members
-    :rtype: list
-    :return: list of cfgs with to be removed members
-    :rtype: list
-    """
-    post_cfgs = []
-    remove_cfgs = []
-    for cfg in cfgs:
-        found_in_c = False
-        for c_cfg in c_cfgs:
-            if cfg["name"] == c_cfg["cfg-name"]:
-                found_in_c = True
-                added_members, removed_members = process_member_diff(
-                    result, cfg["members"], c_cfg["member-zone"]["zone-name"])
-
-                if len(added_members) > 0:
-                    post_cfg = {}
-                    post_cfg["name"] = cfg["name"]
-                    post_cfg["members"] = added_members
-                    post_cfgs.append(post_cfg)
-                if len(removed_members) > 0:
-                    remove_cfg = {}
-                    remove_cfg["name"] = cfg["name"]
-                    remove_cfg["members"] = removed_members
-                    remove_cfgs.append(remove_cfg)
-                continue
-        if not found_in_c:
-            post_cfgs.append(cfg)
-
-    return 0, post_cfgs, remove_cfgs
+from ansible.module_utils.brocade_zoning import zoning_common, cfg_post, cfg_delete, cfg_get, cfg_process_diff, cfg_process_diff_to_delete
 
 
 def main():
@@ -181,10 +153,13 @@ def main():
     """
 
     argument_spec = dict(
-        credential=dict(required=True, type='dict'),
+        credential=dict(required=True, type='dict', no_log=True),
         vfid=dict(required=False, type='int'),
         throttle=dict(required=False, type='float'),
+        timeout=dict(required=False, type='float'),
         cfgs=dict(required=False, type='list'),
+        members_add_only=dict(required=False, type='bool'),
+        members_remove_only=dict(required=False, type='bool'),
         cfgs_to_delete=dict(required=False, type='list'),
         active_cfg=dict(required=False, type='str'))
 
@@ -201,8 +176,11 @@ def main():
     fos_password = input_params['credential']['fos_password']
     https = input_params['credential']['https']
     throttle = input_params['throttle']
+    timeout = input_params['timeout']
     vfid = input_params['vfid']
     cfgs = input_params['cfgs']
+    members_add_only = input_params['members_add_only']
+    members_remove_only = input_params['members_remove_only']
     cfgs_to_delete = input_params['cfgs_to_delete']
     active_cfg = input_params['active_cfg']
     result = {"changed": False}
@@ -212,15 +190,16 @@ def main():
 
     ret_code, auth, fos_version = login(fos_ip_addr,
                            fos_user_name, fos_password,
-                           https, throttle, result)
+                           https, throttle, result, timeout)
     if ret_code != 0:
         module.exit_json(**result)
 
     zoning_common(fos_ip_addr, https, auth, vfid, result, module, cfgs,
-                  cfgs_to_delete, "cfg", cfg_process_diff, cfg_get, cfg_post,
-                  cfg_delete, active_cfg)
+                  members_add_only, members_remove_only, cfgs_to_delete, "cfg",
+                  cfg_process_diff, cfg_process_diff_to_delete,
+                  cfg_get, cfg_post, cfg_delete, active_cfg, timeout)
 
-    ret_code = logout(fos_ip_addr, https, auth, result)
+    ret_code = logout(fos_ip_addr, https, auth, result, timeout)
     module.exit_json(**result)
 
 

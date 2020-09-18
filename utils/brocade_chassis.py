@@ -20,30 +20,7 @@ Brocade chassis utils
 REST_CHASSIS = "/rest/running/brocade-chassis/chassis"
 
 
-def to_human_chassis(attributes):
-    for k, v in attributes.items():
-        if v == "true":
-            attributes[k] = True
-        elif v == "false":
-            attributes[k] = False
-
-    yang_to_human(attributes)
-
-
-def to_fos_chassis(attributes, result):
-    human_to_yang(attributes)
-
-    for k, v in attributes.items():
-        if isinstance(v, bool):
-            if v == True:
-                attributes[k] = "true"
-            else:
-                attributes[k] = "false"
-
-    return 0
-
-
-def chassis_get(login, password, fos_ip_addr, fos_version, is_https, auth, vfid, result):
+def chassis_get(login, password, fos_ip_addr, fos_version, is_https, auth, vfid, result, ssh_hostkeymust, timeout):
     """
         retrieve existing switch configurations
 
@@ -65,16 +42,20 @@ def chassis_get(login, password, fos_ip_addr, fos_version, is_https, auth, vfid,
                                                     REST_CHASSIS)
 
     rtype, rdict = url_get_to_dict(fos_ip_addr, is_https, auth, vfid,
-                           result, full_chassis_url)
+                           result, full_chassis_url, timeout)
     if rtype != 0:
         result["failed"] = True
         result["msg"] = "API failed to return data"
         return -1, None
 
-    rssh, sshstr = ssh_and_configure(login, password, fos_ip_addr, False, "timeout", "showcommand")
+    rssh, sshstr = ssh_and_configure(login, password, fos_ip_addr, ssh_hostkeymust, "timeout", "showcommand")
     if rssh == 0:
         if "Current IDLE Timeout is " in sshstr:
             text = sshstr[len("Current IDLE Timeout is "):]
+            timeout = text.split(" ")
+            rdict["Response"]["chassis"]["telnet-timeout"] = timeout[0]
+        elif "Shell Idle Timeout is " in sshstr:
+            text = sshstr[len("Shell Idle Timeout is "):]
             timeout = text.split(" ")
             rdict["Response"]["chassis"]["telnet-timeout"] = timeout[0]
         else:
@@ -85,7 +66,7 @@ def chassis_get(login, password, fos_ip_addr, fos_version, is_https, auth, vfid,
     return 0, rdict
 
 
-def chassis_patch(login, password, fos_ip_addr, fos_version, is_https, auth, vfid, result, diff_attributes):
+def chassis_patch(login, password, fos_ip_addr, fos_version, is_https, auth, vfid, result, diff_attributes, ssh_hostkeymust, timeout):
     """
         update existing switch configurations
 
@@ -107,10 +88,10 @@ def chassis_patch(login, password, fos_ip_addr, fos_version, is_https, auth, vfi
     l_diffs = diff_attributes.copy()
 
     if "telnet-timeout" in l_diffs:
-        rssh, sshstr = ssh_and_configure(login, password, fos_ip_addr, False, "timeout " + str(l_diffs["telnet-timeout"]), "The modified IDLE Timeout will be in effect after NEXT login")
+        rssh, sshstr = ssh_and_configure(login, password, fos_ip_addr, ssh_hostkeymust, "timeout " + str(l_diffs["telnet-timeout"]), "Timeout will be in effect after NEXT login")
         if rssh != 0:
             result["failed"] = True
-            result["msg"] = "Failed to set telnet-timeout"
+            result["msg"] = "Failed to set telnet-timeout. " + sshstr
         else:
             result["changed"] = True
             result["messages"] = "telnet-timeout set"
@@ -125,4 +106,4 @@ def chassis_patch(login, password, fos_ip_addr, fos_version, is_https, auth, vfi
 
     return (url_patch_single_object(fos_ip_addr, is_https, auth,
                                     vfid, result, full_chassis_url,
-                                    "chassis", l_diffs))
+                                    "chassis", l_diffs, timeout))

@@ -29,10 +29,10 @@ options:
     credential:
         description:
         - login information including
-          fos_ip_addr: ip address of the FOS switch
-          fos_user_name: login name of FOS switch REST API
-          fos_password: password of FOS switch REST API
-          https: True for HTTPS, self for self-signed HTTPS, or False for HTTP
+          fos_ip_addr - ip address of the FOS switch
+          fos_user_name - login name of FOS switch REST API
+          fos_password - password of FOS switch REST API
+          https - True for HTTPS, self for self-signed HTTPS, or False for HTTP
         type: dict
         required: true
     vfid:
@@ -43,7 +43,13 @@ options:
         required: false
     throttle:
         description:
-        - rest throttling delay in seconds.
+        - rest throttling delay in seconds to retry once more if
+          server is busy.
+        required: false
+    timeout:
+        description:
+        - rest timeout in seconds for operations taking longer than
+          default timeout.
         required: false
     default_zone_access:
         description:
@@ -103,9 +109,10 @@ def main():
     """
 
     argument_spec = dict(
-        credential=dict(required=True, type='dict'),
+        credential=dict(required=True, type='dict', no_log=True),
         vfid=dict(required=False, type='int'),
         throttle=dict(required=False, type='float'),
+        timeout=dict(required=False, type='float'),
         default_zone_access=dict(required=False, type='str'))
 
     module = AnsibleModule(
@@ -121,6 +128,7 @@ def main():
     fos_password = input_params['credential']['fos_password']
     https = input_params['credential']['https']
     throttle = input_params['throttle']
+    timeout = input_params['timeout']
     vfid = input_params['vfid']
     default_zone_access = input_params['default_zone_access']
     result = {"changed": False}
@@ -130,13 +138,13 @@ def main():
 
     ret_code, auth, fos_version = login(fos_ip_addr,
                            fos_user_name, fos_password,
-                           https, throttle, result)
+                           https, throttle, result, timeout)
     if ret_code != 0:
         module.exit_json(**result)
 
-    ret_code, response = effective_get(fos_ip_addr, https, auth, vfid, result)
+    ret_code, response = effective_get(fos_ip_addr, https, auth, vfid, result, timeout)
     if ret_code != 0:
-        exit_after_login(fos_ip_addr, https, auth, result, module)
+        exit_after_login(fos_ip_addr, https, auth, result, module, timeout)
 
     resp_effective = response["Response"]["effective-configuration"]
 
@@ -150,27 +158,27 @@ def main():
     if len(diff_attributes) > 0:
         ret_code = to_fos_zoning(diff_attributes, result)
         if ret_code != 0:
-            exit_after_login(fos_ip_addr, https, auth, result, module)
+            exit_after_login(fos_ip_addr, https, auth, result, module, timeout)
 
         if not module.check_mode:
             ret_code = effective_patch(fos_ip_addr, https,
-                                       auth, vfid, result, diff_attributes)
+                                       auth, vfid, result, diff_attributes, timeout)
             if ret_code != 0:
-                exit_after_login(fos_ip_addr, https, auth, result, module)
+                exit_after_login(fos_ip_addr, https, auth, result, module, timeout)
 
             checksum = resp_effective["checksum"]
             ret_code = cfg_save(fos_ip_addr, https, auth, vfid,
-                                result, checksum)
+                                result, checksum, timeout)
             if ret_code != 0:
-                ret_code = cfg_abort(fos_ip_addr, https, auth, vfid, result)
-                exit_after_login(fos_ip_addr, https, auth, result, module)
+                ret_code = cfg_abort(fos_ip_addr, https, auth, vfid, result, timeout)
+                exit_after_login(fos_ip_addr, https, auth, result, module, timeout)
 
         result["changed"] = True
     else:
-        logout(fos_ip_addr, https, auth, result)
+        logout(fos_ip_addr, https, auth, result, timeout)
         module.exit_json(**result)
 
-    logout(fos_ip_addr, https, auth, result)
+    logout(fos_ip_addr, https, auth, result, timeout)
     module.exit_json(**result)
 
 

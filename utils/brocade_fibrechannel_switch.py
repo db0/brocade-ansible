@@ -24,25 +24,20 @@ def to_human_switch(switch_config):
     # convert all boolean strings to boolean
     # first. Then convert integer booleans
     # to boolean
+    yang_to_human(switch_config)
+
     for k, v in switch_config.items():
         if v == "true":
             switch_config[k] = True
         elif v == "false":
             switch_config[k] = False
 
-    if "enabled-state" in switch_config:
-        if switch_config["enabled-state"] == "3":
-            switch_config["enabled-state"] = False
+    if "enabled_state" in switch_config:
+        if switch_config["enabled_state"] == "3":
+            switch_config["enabled_state"] = False
         else:
-            switch_config["enabled-state"] = True
+            switch_config["enabled_state"] = True
 
-    if "ag-mode" in switch_config:
-        if switch_config["ag-mode"] == "1":
-            switch_config["ag-mode"] = True
-        else:
-            switch_config["ag-mode"] = False
-
-    yang_to_human(switch_config)
 
 def to_fos_switch(switch_config, result):
     human_to_yang(switch_config)
@@ -58,17 +53,6 @@ def to_fos_switch(switch_config, result):
             result["msg"] = "enabled-state converted to unknown"
             return -1
 
-    if "ag-mode" in switch_config:
-        if isinstance(switch_config["ag-mode"], bool):
-            if switch_config["ag-mode"] == False:
-                switch_config["ag-mode"] = "0"
-            else:
-                switch_config["ag-mode"] = "1"
-        else:
-            result["failed"] = True
-            result["msg"] = "ag-mode converted to unknown"
-            return -1
-
     # convert the boolean to integers first
     # then convert the rest of the booleans to bool string
     for k, v in switch_config.items():
@@ -81,7 +65,7 @@ def to_fos_switch(switch_config, result):
     return 0
 
 
-def fc_switch_get(login, password, fos_ip_addr, fos_version, is_https, auth, vfid, result):
+def fc_switch_get(login, password, fos_ip_addr, fos_version, is_https, auth, vfid, result, ssh_hostkeymust, timeout):
     """
         retrieve existing switch configurations
 
@@ -103,7 +87,7 @@ def fc_switch_get(login, password, fos_ip_addr, fos_version, is_https, auth, vfi
                                                       REST_SWITCH)
 
     rtype, rdict = url_get_to_dict(fos_ip_addr, is_https, auth, vfid,
-                           result, full_fc_switch_url)
+                           result, full_fc_switch_url, timeout)
 
     if rtype != 0:
         result["failed"] = True
@@ -113,9 +97,9 @@ def fc_switch_get(login, password, fos_ip_addr, fos_version, is_https, auth, vfi
     result["fos_version"] = fos_version
     result["fos_version_check"] = fos_version < "v9.0"
     if fos_version < "v9.0":
-        rssh, sshstr = ssh_and_configure(login, password, fos_ip_addr, False, "dlsshow", "showcommand")
+        rssh, sshstr = ssh_and_configure(login, password, fos_ip_addr, ssh_hostkeymust, "dlsshow", "showcommand")
         if rssh == 0:
-            if "DLS is set with Lossless disabled" in sshstr:
+            if "DLS is set with Lossless disabled" in sshstr or "Error: This command is not supported in AG mode" in sshstr:
                 rdict["Response"]["fibrechannel-switch"]["dynamic-load-sharing"] = "disabled"
             elif "DLS is set with Lossless enabled, Two-hop Lossless disabled" in sshstr:
                 rdict["Response"]["fibrechannel-switch"]["dynamic-load-sharing"] = "lossless-dls"
@@ -128,8 +112,9 @@ def fc_switch_get(login, password, fos_ip_addr, fos_version, is_https, auth, vfi
 
     return 0, rdict
 
+
 def fc_switch_patch(login, password, fos_ip_addr, fos_version, is_https, auth,
-                    vfid, result, diff_attributes):
+                    vfid, result, diff_attributes, ssh_hostkeymust, timeout):
     """
         update existing switch configurations
 
@@ -153,40 +138,40 @@ def fc_switch_patch(login, password, fos_ip_addr, fos_version, is_https, auth,
     if fos_version < "v9.0":
         if "dynamic-load-sharing" in l_diffs:
             if l_diffs["dynamic-load-sharing"] == "disabled":
-                rssh, sshstr = ssh_and_configure(login, password, fos_ip_addr, False, "dlsset --disable -lossless", "Lossless is not set")
+                rssh, sshstr = ssh_and_configure(login, password, fos_ip_addr, ssh_hostkeymust, "dlsset --disable -lossless", "Lossless is not set")
                 if rssh != 0:
                     result["failed"] = True
-                    result["msg"] = "Failed to disable DLS lossless"
+                    result["msg"] = "Failed to disable DLS lossless. " + sshstr
                 else:
-                    rssh, sshstr = ssh_and_configure(login, password, fos_ip_addr, False, "dlsset --disable -twohop", "Two-hop lossless is not set")
+                    rssh, sshstr = ssh_and_configure(login, password, fos_ip_addr, ssh_hostkeymust, "dlsset --disable -twohop", "Two-hop lossless is not set")
                     if rssh != 0:
                         result["failed"] = True
-                        result["msg"] = "Failed to disable DLS twohop"
+                        result["msg"] = "Failed to disable DLS twohop. " + sshstr
                     else:
                         result["changed"] = True
             elif l_diffs["dynamic-load-sharing"] == "lossless-dls":
-                rssh, sshstr = ssh_and_configure(login, password, fos_ip_addr, False, "dlsset --enable -lossless", "Lossless is set")
+                rssh, sshstr = ssh_and_configure(login, password, fos_ip_addr, ssh_hostkeymust, "dlsset --enable -lossless", "Lossless is set")
                 if rssh != 0:
                     result["failed"] = True
-                    result["msg"] = "Failed to enable DLS lossless"
+                    result["msg"] = "Failed to enable DLS lossless. " + sshstr
                 else:
-                    rssh, sshstr = ssh_and_configure(login, password, fos_ip_addr, False, "dlsset --disable -twohop", ["Two-hop lossless disabled successfully", "Two-hop lossless is not set"])
+                    rssh, sshstr = ssh_and_configure(login, password, fos_ip_addr, ssh_hostkeymust, "dlsset --disable -twohop", ["Two-hop lossless disabled successfully", "Two-hop lossless is not set"])
                     if rssh != 0:
                         result["failed"] = True
-                        result["msg"] = "Failed to disable DLS twohop"
+                        result["msg"] = "Failed to disable DLS twohop. " + sshstr
                     else:
                         result["changed"] = True
                         result["messages"] = "disabled DSL twohop"
             elif l_diffs["dynamic-load-sharing"] == "two-hop-lossless-dls":
-                rssh, sshstr = ssh_and_configure(login, password, fos_ip_addr, False, "dlsset --enable -lossless", "Lossless is set")
+                rssh, sshstr = ssh_and_configure(login, password, fos_ip_addr, ssh_hostkeymust, "dlsset --enable -lossless", "Lossless is set")
                 if rssh != 0:
                     result["failed"] = True
-                    result["msg"] = "Failed to enable DLS lossless"
+                    result["msg"] = "Failed to enable DLS lossless. " + sshstr
                 else:
-                    rssh, sshstr = ssh_and_configure(login, password, fos_ip_addr, False, "dlsset --enable -twohop", "Two-hop lossless enabled successfully")
+                    rssh, sshstr = ssh_and_configure(login, password, fos_ip_addr, ssh_hostkeymust, "dlsset --enable -twohop", "Two-hop lossless enabled successfully")
                     if rssh != 0:
                         result["failed"] = True
-                        result["msg"] = "Failed to enable DLS twohop"
+                        result["msg"] = "Failed to enable DLS twohop. " + sshstr
                     else:
                         result["changed"] = True
                         result["messages"] = "enable DSL two-hop-lossless-dls"
@@ -205,4 +190,4 @@ def fc_switch_patch(login, password, fos_ip_addr, fos_version, is_https, auth,
 
     return (url_patch_single_object(fos_ip_addr, is_https, auth,
                                     vfid, result, full_fc_switch_url,
-                                    "fibrechannel-switch", l_diffs))
+                                    "fibrechannel-switch", l_diffs, timeout))

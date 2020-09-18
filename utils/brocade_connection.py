@@ -10,7 +10,7 @@ import time
 import ansible.module_utils.urls as ansible_urls
 import ansible.module_utils.six.moves.urllib.error as urllib_error
 from ansible.module_utils.brocade_xml import bsn_xmltodict
-from ansible.module_utils.brocade_url import url_post, full_url_get, url_get_to_dict
+from ansible.module_utils.brocade_url import url_post, full_url_get, url_get_to_dict, url_helper, ERROR_GENERIC, ERROR_SERVER_BUSY
 
 
 __metaclass__ = type
@@ -20,13 +20,13 @@ __metaclass__ = type
 Brocade Connections utils
 """
 
-DEFAULT_THROTTLE = 1.1
+DEFAULT_THROTTLE = 4
 REST_LOGIN = "/rest/login"
 REST_LOGOUT = "/rest/logout"
 REST_SWITCH = "/rest/running/brocade-fibrechannel-switch/fibrechannel-switch"
 
 
-def login(fos_ip_addr, fos_user_name, fos_password, is_https, throttle, result):
+def login(fos_ip_addr, fos_user_name, fos_password, is_https, throttle, result, timeout):
     """
         login to the fos switch at ip address specified
 
@@ -51,18 +51,19 @@ def login(fos_ip_addr, fos_user_name, fos_password, is_https, throttle, result):
 
     credential = {"Authorization": "Basic " + login_encoded.decode(),
                   "User-Agent": "Rest-Conf"}
-    try:
-        login_resp = ansible_urls.open_url(full_login_url, headers=credential,
-                                           method="POST", validate_certs=validate_certs)
-    except urllib_error.HTTPError as e:
-        result["login_resp_code"] = e.code
-        result["login_resp_reason"] = e.reason
-        result["full_login_Url"] = full_login_url
-        ret_code, root_dict = bsn_xmltodict(result, e.read())
-        result["login_resp_data"] = root_dict
-        result["failed"] = True
-        result["msg"] = "failed to login"
-        return -1, None, None
+
+    retval, eret, edict, login_resp = url_helper(full_login_url, None, "POST", None, result, validate_certs, timeout, credential=credential)
+    if retval == ERROR_GENERIC:
+        if eret == ERROR_SERVER_BUSY:
+            if throttle == None:
+                time.sleep(DEFAULT_THROTTLE)
+            else:
+                time.sleep(throttle)
+            retval, eret, edict, login_resp = url_helper(full_login_url, None, "POST", None, result, validate_certs, timeout, credential=credential)
+            if retval == ERROR_GENERIC:
+                return eret, None, None
+        else:
+            return eret, None, None
 
     full_switch_url, validate_certs = full_url_get(is_https,
                                                    fos_ip_addr,
@@ -77,19 +78,19 @@ def login(fos_ip_addr, fos_user_name, fos_password, is_https, throttle, result):
 
     # get fos version from the default switch
     rtype, rdict = url_get_to_dict(fos_ip_addr, is_https, auth, -1,
-                                           result, full_switch_url)
+                                           result, full_switch_url, timeout)
     if rtype != 0:
         result["failed"] = True
         result["msg"] = "API failed to return switch firmware version"
-        logout(fos_ip_addr, is_https, auth, result)
+        logout(fos_ip_addr, is_https, auth, result, timeout)
         return -1, None, None
 
-    time.sleep(auth["throttle"] * 2)
+#    time.sleep(auth["throttle"] * 2)
 
     return 0, auth, rdict["Response"]["fibrechannel-switch"]["firmware-version"]
 
 
-def logout(fos_ip_addr, is_https, auth, result):
+def logout(fos_ip_addr, is_https, auth, result, timeout):
     """
         logout from the fos switch at ip address specified
 
@@ -107,10 +108,10 @@ def logout(fos_ip_addr, is_https, auth, result):
                                                    REST_LOGOUT)
 
     return url_post(fos_ip_addr, is_https, auth, None,
-                    result, full_logout_url, None)
+                    result, full_logout_url, None, timeout)
 
 
-def exit_after_login(fos_ip_addr, https, auth, result, module):
+def exit_after_login(fos_ip_addr, https, auth, result, module, timeout):
     """
         module exit but logout first
 
@@ -126,6 +127,6 @@ def exit_after_login(fos_ip_addr, https, auth, result, module):
         :return: 0
         :rtype: int
     """
-    logout(fos_ip_addr, https, auth, result)
+    logout(fos_ip_addr, https, auth, result, timeout)
     module.exit_json(**result)
     return 0

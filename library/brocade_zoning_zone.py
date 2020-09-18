@@ -34,10 +34,10 @@ options:
     credential:
         description:
         - login information including
-          fos_ip_addr: ip address of the FOS switch
-          fos_user_name: login name of FOS switch REST API
-          fos_password: password of FOS switch REST API
-          https: True for HTTPS, self for self-signed HTTPS, or False for HTTP
+          fos_ip_addr - ip address of the FOS switch
+          fos_user_name - login name of FOS switch REST API
+          fos_password - password of FOS switch REST API
+          https - True for HTTPS, self for self-signed HTTPS, or False for HTTP
         type: dict
         required: true
     vfid:
@@ -48,7 +48,13 @@ options:
         required: false
     throttle:
         description:
-        - rest throttling delay in seconds.
+        - rest throttling delay in seconds to retry once more if
+          server is busy.
+        required: false
+    timeout:
+        description:
+        - rest timeout in seconds for operations taking longer than
+          default timeout.
         required: false
     zones:
         description:
@@ -62,6 +68,14 @@ options:
           members are specified. zones are zones_to_delete are mutually
           exclusive.
         required: true
+    members_add_only:
+        description:
+        - If set to True, new members will be added and old members
+          not specified also remain
+    members_remove_only:
+        description:
+        - If set to True, members specified are removed
+        required: false
     zones_to_delete:
         description:
         - List of zones to be deleted. zones are zones_to_delete are mutually
@@ -129,77 +143,7 @@ Brocade Zoning Zones
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils.brocade_connection import login, logout, exit_after_login
-from ansible.module_utils.brocade_zoning import zoning_common, zone_post, zone_delete, zone_get, process_member_diff
-
-
-def zone_process_diff(result, zones, c_zones):
-    """
-    return the diff from expected zones vs. current zones
-
-    :param zones: list of expected zones
-    :type zones: list
-    :param c_zones: list of current zones
-    :type c_zones: list
-    :return: indicate if diff or the same
-    :rtype: bool
-    :return: list of zones with to be added members
-    :rtype: list
-    :return: list of zones with to be removed members
-    :rtype: list
-    """
-    post_zones = []
-    remove_zones = []
-    for zone in zones:
-        found_in_c = False
-        for c_zone in c_zones:
-            if zone["name"] == c_zone["zone-name"]:
-                found_in_c = True
-                added_members, removed_members = process_member_diff(
-                    result, zone["members"],
-                    c_zone["member-entry"]["entry-name"])
-                if (
-                        "principal_members" in zone and
-                        "principal-entry-name" in c_zone["member-entry"]):
-                    added_pmembers, removed_pmembers = process_member_diff(
-                        result, zone["principal_members"],
-                        c_zone["member-entry"]
-                        ["principal-entry-name"])
-                elif (
-                        "principal_members" in zone and
-                        "principal-entry-name" not in c_zone["member-entry"]):
-                    added_pmembers, removed_pmembers = process_member_diff(
-                        result, zone["principal_members"], [])
-                elif (
-                        "principal_members" not in zone and
-                        "principal-entry-name" in c_zone["member-entry"]):
-                    added_pmembers, removed_pmembers = process_member_diff(
-                        result, [], c_zone["member-entry"]
-                        ["principal-entry-name"])
-                else:
-                    added_pmembers = []
-                    removed_pmembers = []
-
-                if len(added_members) > 0 or len(added_pmembers):
-                    post_zone = {}
-                    post_zone["name"] = zone["name"]
-                    if added_members:
-                        post_zone["members"] = added_members
-                    if added_pmembers:
-                        post_zone["principal_members"] = added_pmembers
-                    post_zones.append(post_zone)
-                if len(removed_members) > 0:
-                    remove_zone = {}
-                    remove_zone["name"] = zone["name"]
-                    if removed_members:
-                        remove_zone["members"] = removed_members
-                    if removed_pmembers:
-                        remove_zone["members"] = removed_pmembers
-                    remove_zones.append(remove_zone)
-                continue
-        if not found_in_c:
-            post_zones.append(zone)
-
-    return 0, post_zones, remove_zones
+from ansible.module_utils.brocade_zoning import zoning_common, zone_post, zone_delete, zone_get, zone_process_diff, zone_process_diff_to_delete
 
 
 def main():
@@ -208,10 +152,13 @@ def main():
     """
 
     argument_spec = dict(
-        credential=dict(required=True, type='dict'),
+        credential=dict(required=True, type='dict', no_log=True),
         vfid=dict(required=False, type='int'),
         throttle=dict(required=False, type='float'),
+        timeout=dict(required=False, type='float'),
         zones=dict(required=False, type='list'),
+        members_add_only=dict(required=False, type='bool'),
+        members_remove_only=dict(required=False, type='bool'),
         zones_to_delete=dict(required=False, type='list'))
 
     module = AnsibleModule(
@@ -227,8 +174,11 @@ def main():
     fos_password = input_params['credential']['fos_password']
     https = input_params['credential']['https']
     throttle = input_params['throttle']
+    timeout = input_params['timeout']
     vfid = input_params['vfid']
     zones = input_params['zones']
+    members_add_only = input_params['members_add_only']
+    members_remove_only = input_params['members_remove_only']
     zones_to_delete = input_params['zones_to_delete']
     result = {"changed": False}
 
@@ -237,15 +187,16 @@ def main():
 
     ret_code, auth, fos_version = login(fos_ip_addr,
                            fos_user_name, fos_password,
-                           https, throttle, result)
+                           https, throttle, result, timeout)
     if ret_code != 0:
         module.exit_json(**result)
 
     zoning_common(fos_ip_addr, https, auth, vfid, result, module, zones,
-                  zones_to_delete, "zone", zone_process_diff, zone_get,
-                  zone_post, zone_delete, None)
+                  members_add_only, members_remove_only, zones_to_delete, "zone",
+                  zone_process_diff, zone_process_diff_to_delete, zone_get,
+                  zone_post, zone_delete, None, timeout)
 
-    ret_code = logout(fos_ip_addr, https, auth, result)
+    ret_code = logout(fos_ip_addr, https, auth, result, timeout)
     module.exit_json(**result)
 
 

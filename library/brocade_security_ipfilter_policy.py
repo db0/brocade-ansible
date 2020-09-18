@@ -29,10 +29,10 @@ options:
     credential:
         description:
         - login information including
-          fos_ip_addr: ip address of the FOS switch
-          fos_user_name: login name of FOS switch REST API
-          fos_password: password of FOS switch REST API
-          https: True for HTTPS, self for self-signed HTTPS, or False for HTTP
+          fos_ip_addr - ip address of the FOS switch
+          fos_user_name - login name of FOS switch REST API
+          fos_password - password of FOS switch REST API
+          https - True for HTTPS, self for self-signed HTTPS, or False for HTTP
         type: dict
         required: true
     vfid:
@@ -43,7 +43,13 @@ options:
         required: false
     throttle:
         description:
-        - rest throttling delay in seconds.
+        - rest throttling delay in seconds to retry once more if
+          server is busy.
+        required: false
+    timeout:
+        description:
+        - rest timeout in seconds for operations taking longer than
+          default timeout.
         required: false
     ipfilter_policies:
         description:
@@ -113,8 +119,9 @@ Brocade Fibre Channel ipfilter policy Configuration
 
 
 from ansible.module_utils.brocade_connection import login, logout, exit_after_login
-from ansible.module_utils.brocade_yang import generate_diff
-from ansible.module_utils.brocade_security import ipfilter_policy_patch, ipfilter_policy_post, ipfilter_policy_delete, ipfilter_policy_get, to_human_ipfilter_policy, to_fos_ipfilter_policy
+from ansible.module_utils.brocade_yang import is_full_human
+from ansible.module_utils.brocade_objects import list_helper, list_delete_helper
+from ansible.module_utils.brocade_security import ipfilter_policy_patch, ipfilter_policy_get, to_human_ipfilter_policy, to_fos_ipfilter_policy
 from ansible.module_utils.basic import AnsibleModule
 
 
@@ -124,9 +131,10 @@ def main():
     """
 
     argument_spec = dict(
-        credential=dict(required=True, type='dict'),
+        credential=dict(required=True, type='dict', no_log=True),
         vfid=dict(required=False, type='int'),
         throttle=dict(required=False, type='float'),
+        timeout=dict(required=False, type='float'),
         ipfilter_policies=dict(required=False, type='list'),
         active_policy=dict(required=False, type='str'),
         delete_policies=dict(required=False, type='list'))
@@ -144,25 +152,40 @@ def main():
     fos_password = input_params['credential']['fos_password']
     https = input_params['credential']['https']
     throttle = input_params['throttle']
+    timeout = input_params['timeout']
     vfid = input_params['vfid']
     ipfilter_policies = input_params['ipfilter_policies']
     active_policy = input_params['active_policy']
     delete_policies = input_params['delete_policies']
     result = {"changed": False}
 
+    # if delete policy is not None, then we make sure
+    # the policy is not present.
+    # policy creation or update does not happen at the same
+    # time
+    if delete_policies != None:
+        return list_delete_helper(module, fos_ip_addr, fos_user_name, fos_password, https, True, throttle, vfid, "brocade_security", "ipfilter_policy", delete_policies, True, result, timeout)
+
+    # if I am dealing with active_policy set, it must be policy list update
+    if active_policy == None:
+        return list_helper(module, fos_ip_addr, fos_user_name, fos_password, https, True, throttle, vfid, "brocade_security", "ipfilter_policy", ipfilter_policies, False, result, timeout)
+
+    if not is_full_human(ipfilter_policies, result):
+        module.exit_json(**result)
+
     if vfid is None:
         vfid = 128
 
     ret_code, auth, fos_version = login(fos_ip_addr,
                            fos_user_name, fos_password,
-                           https, throttle, result)
+                           https, throttle, result, timeout)
     if ret_code != 0:
         module.exit_json(**result)
 
     ret_code, response = ipfilter_policy_get(
-        fos_ip_addr, https, auth, vfid, result)
+        fos_ip_addr, https, auth, vfid, result, timeout)
     if ret_code != 0:
-        exit_after_login(fos_ip_addr, https, auth, result, module)
+        exit_after_login(fos_ip_addr, https, auth, result, module, timeout)
 
     resp_ir = response["Response"]["ipfilter-policy"]
 
@@ -203,9 +226,9 @@ def main():
             if not module.check_mode:
                 ret_code = ipfilter_policy_patch(
                     fos_ip_addr, https,
-                    auth, vfid, result, activate_list)
+                    auth, vfid, result, activate_list, timeout)
                 if ret_code != 0:
-                    exit_after_login(fos_ip_addr, https, auth, result, module)
+                    exit_after_login(fos_ip_addr, https, auth, result, module, timeout)
 
             result["changed"] = True
         elif found_active_policy:
@@ -214,96 +237,8 @@ def main():
             result["failed"] = True
             result["msg"] = "could not find matching policy"
 
-        logout(fos_ip_addr, https, auth, result)
+        logout(fos_ip_addr, https, auth, result, timeout)
         module.exit_json(**result)
-
-    # if delete policy is not None, then we make sure
-    # the policy is not present.
-    # policy creation or update does not happen at the same
-    # time
-    if delete_policies != None:
-        to_delete = []
-        for delete_policy in delete_policies:
-            found = False
-            for c_policy in c_policies:
-                if c_policy["name"] == delete_policy["name"]:
-                    found = True
-                    break
-            if found:
-                to_delete.append(delete_policy)
-
-        if len(to_delete) > 0:
-            if not module.check_mode:
-                ret_code = ipfilter_policy_delete(
-                    fos_ip_addr, https,
-                    auth, vfid, result, to_delete)
-                if ret_code != 0:
-                    exit_after_login(fos_ip_addr, https, auth, result, module)
-
-            result["changed"] = True
-
-        logout(fos_ip_addr, https, auth, result)
-        module.exit_json(**result)
-
-    diff_policies = []
-    for new_ip in ipfilter_policies:
-        for c_policy in c_policies:
-            if new_ip["name"] == c_policy["name"]:
-                diff_attributes = generate_diff(result, c_policy, new_ip)
-                if len(diff_attributes) > 0:
-                    result["c_policy"] = c_policy
-                    diff_attributes["name"] = new_ip["name"]
-                    ret_code = to_fos_ipfilter_policy(diff_attributes, result)
-                    if ret_code != 0:
-                        exit_after_login(fos_ip_addr, https, auth, result, module)
-
-                    diff_policies.append(diff_attributes)
-
-    add_policies = []
-    for new_ip in ipfilter_policies:
-        found = False
-        for c_policy in c_policies:
-            if new_ip["name"] == c_policy["name"]:
-                found = True
-        if not found:
-            new_policy = {}
-            for k, v in new_ip.items():
-                new_policy[k] = v
-            ret_code = to_fos_ipfilter_policy(new_policy, result)
-            result["retcode"] = ret_code
-            if ret_code != 0:
-                exit_after_login(fos_ip_addr, https, auth, result, module)
-
-            add_policies.append(new_policy)
-
-    result["resp_ir"] = resp_ir
-    result["ipfilter_policies"] = ipfilter_policies
-    result["diff_policies"] = diff_policies
-    result["add_policies"] = add_policies
-    result["delete_policies"] = delete_policies
-
-    if len(diff_policies) > 0:
-        if not module.check_mode:
-            ret_code = ipfilter_policy_patch(
-                fos_ip_addr, https,
-                auth, vfid, result, diff_policies)
-            if ret_code != 0:
-                exit_after_login(fos_ip_addr, https, auth, result, module)
-
-        result["changed"] = True
-
-    if len(add_policies) > 0:
-        if not module.check_mode:
-            ret_code = ipfilter_policy_post(
-                fos_ip_addr, https,
-                auth, vfid, result, add_policies)
-            if ret_code != 0:
-                exit_after_login(fos_ip_addr, https, auth, result, module)
-
-        result["changed"] = True
-
-    logout(fos_ip_addr, https, auth, result)
-    module.exit_json(**result)
 
 
 if __name__ == '__main__':
